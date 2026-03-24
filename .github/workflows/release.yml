@@ -1,0 +1,73 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - 'inbox-cli-v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: macos-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.0'
+          channel: 'stable'
+
+      - name: Install dependencies
+        working-directory: thinkflutter/inbox_cli
+        run: flutter pub get
+
+      - name: Build for macOS
+        working-directory: thinkflutter/inbox_cli
+        run: |
+          dart compile exe bin/inbox.dart -o dong-inbox
+          codesign -s - dong-inbox
+          chmod +x dong-inbox
+
+      - name: Create archive
+        working-directory: thinkflutter/inbox_cli
+        run: tar czf dong-inbox-${{ github.ref_name }}-macos.tar.gz dong-inbox
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#inbox-cli-v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: inBox CLI ${{ steps.version.outputs.version }}
+          files: thinkflutter/inbox_cli/dong-inbox-${{ github.ref_name }}-macos.tar.gz
+          generate_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew Formula
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SHA256=$(shasum -a 256 thinkflutter/inbox_cli/dong-inbox-${{ github.ref_name }}-macos.tar.gz | awk '{print $1}')
+
+          # 更新 formula
+          sed -i '' "s/url \"[^\"]*\"/url \"https:\/\/github.com\/dong-labs\/inBoxProject\/raw\/refs\/tags\/inbox-cli-v${VERSION}\/thinkflutter\/inbox_cli\/archive\/dong-inbox-${VERSION}-macos.tar.gz\"/" dong-inbox.rb
+          sed -i '' "s/sha256 :no_check/sha256 \"${SHA256}\"/" dong-inbox.rb
+
+          # 提交到 homebrew-tap 仓库
+          git clone https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/dong-labs/homebrew-tap.git /tmp/homebrew-tap
+          cp dong-inbox.rb /tmp/homebrew-tap/
+          cd /tmp/homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dong-inbox.rb
+          git commit -m "Update dong-inbox to ${VERSION}"
+          git push
